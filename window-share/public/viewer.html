@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Share - Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #screenVideo {
+            max-width: 100%;
+            margin-top: 20px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .error {
+            background: #ffe6e6;
+            color: #d63031;
+        }
+        .success {
+            background: #e6ffe6;
+            color: #27ae60;
+        }
+        #debug {
+            margin-top: 20px;
+            text-align: left;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Screen Share - Viewer</h1>
+    <div id="statusMessage" class="status">Connecting...</div>
+    <video id="screenVideo" autoplay playsinline></video>
+    <div id="debug"></div>
+
+    <script>
+        const video = document.getElementById('screenVideo');
+        const statusMessage = document.getElementById('statusMessage');
+        const debugDiv = document.getElementById('debug');
+        let mediaSource;
+        let sourceBuffer;
+        let ws;
+        const queue = [];
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            debugDiv.textContent += `[${timestamp}] ${message}\n`;
+            console.log(message);
+        }
+
+        function updateStatus(message, isError = false) {
+            statusMessage.textContent = message;
+            statusMessage.classList.toggle('error', isError);
+            statusMessage.classList.toggle('success', !isError);
+            log(message);
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            log(`Connecting to WebSocket: ${wsUrl}`);
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                log('WebSocket connected');
+                // Register as viewer
+                ws.send(JSON.stringify({
+                    type: 'register',
+                    role: 'viewer'
+                }));
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    // Check if the message is JSON
+                    const textData = event.data.toString();
+                    if (textData[0] === '{') {
+                        const jsonData = JSON.parse(textData);
+                        if (jsonData.type === 'registration') {
+                            updateStatus('Connected as viewer. Waiting for stream...', false);
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    // If not JSON, treat as video data
+                }
+
+                try {
+                    if (!sourceBuffer) {
+                        initializeMediaSource();
+                    }
+                    
+                    const data = await event.data.arrayBuffer();
+                    queue.push(data);
+                    processQueue();
+                    updateStatus('Receiving stream...', false);
+                } catch (error) {
+                    updateStatus('Error processing stream: ' + error.message, true);
+                }
+            };
+
+            ws.onclose = () => {
+                updateStatus('Connection lost. Reconnecting...', true);
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (error) => {
+                updateStatus('WebSocket error. Check console for details.', true);
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function initializeMediaSource() {
+            mediaSource = new MediaSource();
+            video.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', () => {
+                sourceBuffer = mediaSource.addSourceBuffer('video/webm;codecs=vp8,opus');
+                sourceBuffer.mode = 'sequence';
+                log('MediaSource initialized');
+            });
+        }
+
+        function processQueue() {
+            if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) {
+                return;
+            }
+
+            try {
+                sourceBuffer.appendBuffer(queue.shift());
+            } catch (error) {
+                log('Error appending buffer: ' + error.message);
+            }
+        }
+
+        // Start connection
+        log('Initializing viewer...');
+        connectWebSocket();
+    </script>
+</body>
+</html>

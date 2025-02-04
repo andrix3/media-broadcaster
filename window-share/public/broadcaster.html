@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Share - Broadcaster</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #screenVideo {
+            max-width: 100%;
+            margin-top: 20px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .error {
+            background: #ffe6e6;
+            color: #d63031;
+        }
+        .success {
+            background: #e6ffe6;
+            color: #27ae60;
+        }
+    </style>
+</head>
+<body>
+    <h1>Screen Share - Broadcaster</h1>
+    <div id="statusMessage" class="status">Initializing...</div>
+    <button id="startButton">Start Sharing Screen</button>
+    <button id="stopButton" disabled>Stop Sharing</button>
+    <video id="screenVideo" autoplay playsinline muted></video>
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const video = document.getElementById('screenVideo');
+        const statusMessage = document.getElementById('statusMessage');
+        let stream = null;
+        let mediaRecorder = null;
+        let ws = null;
+
+        function updateStatus(message, isError = false) {
+            statusMessage.textContent = message;
+            statusMessage.classList.toggle('error', isError);
+            statusMessage.classList.toggle('success', !isError);
+            console.log(message);
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                updateStatus('Connected to server', false);
+                // Register as broadcaster
+                ws.send(JSON.stringify({
+                    type: 'register',
+                    role: 'broadcaster'
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'registration' && data.status === 'success') {
+                    updateStatus('Ready to broadcast', false);
+                }
+            };
+            
+            ws.onclose = () => {
+                updateStatus('Disconnected from server. Reconnecting...', true);
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (error) => {
+                updateStatus('WebSocket error: ' + error, true);
+            };
+        }
+
+        connectWebSocket();
+
+        startButton.addEventListener('click', async () => {
+            try {
+                stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        cursor: "always"
+                    },
+                    audio: false
+                });
+                
+                video.srcObject = stream;
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'video/webm;codecs=vp8,opus'
+                });
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(event.data);
+                    }
+                };
+
+                mediaRecorder.start(100);
+                updateStatus('Broadcasting...', false);
+
+                stream.getVideoTracks()[0].addEventListener('ended', () => {
+                    stopSharing();
+                });
+
+            } catch (err) {
+                console.error(err);
+                updateStatus('Error: ' + err.message, true);
+            }
+        });
+
+        stopButton.addEventListener('click', stopSharing);
+
+        function stopSharing() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            updateStatus('Broadcast stopped', false);
+        }
+    </script>
+</body>
+</html>
